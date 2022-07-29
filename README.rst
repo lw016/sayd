@@ -4,7 +4,7 @@ Sayd
 
 This library was developed with simplicity, security and performance in mind, with modern practices of Python development, currently in a test state.
 
-`Documentation Reference <https://github.com/lw016/servd>`_
+`Documentation Reference <https://sayd.readthedocs.io>`_
 
 
 Install

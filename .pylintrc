@@ -1,0 +1,9 @@
+[DESIGN]
+max-attributes = 20
+max-args = 12
+
+[SIMILARITIES]
+min-similarity-lines = 12
+
+[MESSAGE CONTROL]
+disable=trailing-whitespace

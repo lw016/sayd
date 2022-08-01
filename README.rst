@@ -32,7 +32,7 @@ You need to have installed `poetry <https://github.com/python-poetry/poetry>`_ f
     pip install poetry
     git clone https://github.com/lw016/sayd
     cd sayd
-    poetry install -E dev
+    poetry install
 
 
 Run tests

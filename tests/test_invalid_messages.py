@@ -1,9 +1,11 @@
+import socket
+
 from sayd import SaydServer, SaydClient
 
 
 pytest_plugins = ("pytest_asyncio",)
 
-server: SaydServer = SaydServer(cert="cert.crt", cert_key="cert.key")
+server: SaydServer = SaydServer()
 
 
 @server.callback("message")
@@ -26,12 +28,17 @@ async def test() -> None:
     await server.start()
 
     for _ in range(128):
-        client: SaydClient = SaydClient(port="7050", cert="cert.crt")
+        client: SaydClient = SaydClient(port="7050")
 
         client.add_callback("message", client_message)
         clients.append(client)
 
         await client.start()
+
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+    sock.connect(("localhost", 7050))
+    sock.send(b"randomstuffi")
     
     
     for _ in clients:
@@ -41,8 +48,10 @@ async def test() -> None:
             clients_responses.append(response)
     
     server_responses = await server.call("message")
-
-
+    
+    
+    assert _.connected
+    
     assert len(clients_responses) == 128
     assert len(server_responses) == 128
 

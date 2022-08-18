@@ -1,66 +1,89 @@
-import asyncio
+from asyncio import sleep
 
 from sayd import SaydServer, SaydClient
 
 
 pytest_plugins = ("pytest_asyncio",)
 
-
 server: SaydServer = SaydServer(cert="cert.crt", cert_key="cert.key")
 
-clients_messages: str = 0
 
-clients: list = []
+@server.callback("message")
+async def server_message(address: tuple, instance: str, data: dict) -> dict:
+    return {}
 
-
-async def client_message(instance: str, data: dict) -> None:
-    global clients_messages
-
-    clients_messages += 1
+async def client_message(instance: str, data: dict) -> dict:
+    return {}
 
 
 async def test() -> None:
-    global clients_messages
+    clients: list = []
 
+    clients_responses: list = []
+    server_responses: list = []
 
+    response: Union[dict, None]
+
+    
     await server.start()
 
-
     for _ in range(128):
-        client: SaydClient = SaydClient(cert="cert.crt")
+        client: SaydClient = SaydClient(port="7050", cert="cert.crt")
+
         client.add_callback("message", client_message)
         clients.append(client)
 
         await client.start()
 
-    
-    await asyncio.sleep(2)
 
     await server.stop()
+    await sleep(3)
+    await server.start()
+    await sleep(6)
+    
+    
+    for _ in clients:
+        response = await _.call("message")
+
+        if isinstance(response, dict):
+            clients_responses.append(response)
+    
+    server_responses = await server.call("message")
+
+
+    assert len(clients_responses) == 128
+    assert len(server_responses) == 128
+
+
+    server_responses.clear()
+
+    for _ in server.clients:
+        response = await server.call("message", address=_)
+
+        if isinstance(response, dict):
+            server_responses.append(response)
 
     
-    while client.connected:
-        await asyncio.sleep(1)
+    assert len(server_responses) == 128
 
-
-    await server.start()
-
-    await asyncio.sleep(8)
-
-
-    await server.call("message")
-    await server.call(name="message", address=server.clients.pop())
-
-    await asyncio.sleep(2)
-
-    assert clients_messages == 129
-
-
+    
     for _ in clients:
         await _.stop()
 
+    await sleep(3)
+
+    for _ in clients:
+        await _.start()
+
+    await sleep(1)
+
+
+    server_responses = await server.call("message")
+
+    assert len(server_responses) == 128
+
+    
+    for _ in clients:
+        await _.stop()
 
     await server.stop()
-
-
-    await asyncio.sleep(1)

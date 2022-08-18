@@ -1,9 +1,11 @@
+from asyncio import sleep
+
 from sayd import SaydServer, SaydClient
 
 
 pytest_plugins = ("pytest_asyncio",)
 
-server: SaydServer = SaydServer(cert="cert.crt", cert_key="cert.key")
+server: SaydServer = SaydServer()
 
 
 @server.callback("message")
@@ -26,13 +28,30 @@ async def test() -> None:
     await server.start()
 
     for _ in range(128):
-        client: SaydClient = SaydClient(port="7050", cert="cert.crt")
+        client: SaydClient = SaydClient(port="7050")
 
         client.add_callback("message", client_message)
         clients.append(client)
 
         await client.start()
     
+
+    assert len(server.clients) == len(clients)
+
+    server.blacklist("::1")
+    server.blacklist("127.0.0.1")
+
+    await sleep(3)
+
+    assert len(server.clients) == 0
+
+    server.unblacklist("::1")
+    server.unblacklist("127.0.0.1")
+
+    await sleep(6)
+
+    assert len(server.clients) == len(clients)
+
     
     for _ in clients:
         response = await _.call("message")

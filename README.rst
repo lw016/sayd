@@ -2,7 +2,7 @@ Sayd
 ====
 *A performant asynchronous communication protocol in pure Python.*
 
-This library was developed with simplicity, security and performance in mind, with modern practices of Python development, currently in a test state.
+This library was developed with simplicity and performance in mind, with modern practices of Python development, currently in a test state.
 
 `Documentation Reference <https://sayd.readthedocs.io>`_
 
@@ -25,24 +25,25 @@ Optional
 
 Development
 -----------
-You need to have installed `poetry <https://github.com/python-poetry/poetry>`_ for dependencies management.
+You need to have installed `poetry <https://github.com/python-poetry/poetry>`_ for dependencies management (`how to <https://python-poetry.org/docs/#installation>`_).
 
 .. code-block:: bash
 
-    pip install poetry
     git clone https://github.com/lw016/sayd
     cd sayd
     poetry install
 
 
-Run tests
-^^^^^^^^^^
+Run the tests
+^^^^^^^^^^^^^^
+To run all the tests is required to have installed the Python versions 3.7, 3.8, 3.9 and 3.10.
+
 .. code-block:: bash
 
-    poetry run tox -e tests
+    poetry run tox -e tests-py[37/38/39/310]
 
-Build docs
-^^^^^^^^^^
+Build the docs
+^^^^^^^^^^^^^^^
 .. code-block:: bash
 
     poetry run tox -e docs
@@ -64,23 +65,21 @@ Features
 
 Roadmap
 -------
-- Add option to use Unix socket
+- Add support to Unix socket
 - Implement TLS certificate authentication
-- Add file transference support
-- Support to optionally return a result right after call a remote function
 
 
 CLI
 ---
-The built-in CLI utility (*sayd*) can be used to generate self-signed certificates to encrypt the connection.
+The built-in CLI utility (*sayd*) can be used to generate self-signed certificates to encrypt the connection. Optionally you can install `rich <https://github.com/Textualize/rich>`_ to have a pretty CLI output.
 
 .. code-block:: bash
 
     sayd --help
 
 
-Usage
------
+Usage example
+-------------
 Server
 ^^^^^^
 .. code-block:: python
@@ -104,16 +103,20 @@ Server
 
 
     @server.callback("message")
-    async def msg(address: tuple, instance: str, data: dict) -> None:
-        print(data)
+    async def msg(address: tuple, instance: str, data: dict) -> dict:
+        return {"greetings": "Hello there!"}
 
 
     async def main() -> None:
         await server.start()
         
+        
         while True:
-            await server.call("message", {"content": "Hello from server!"})
+            result = await server.call("message", {"greetings": "Hi!"}) # Broadcast call.
+            print(result)
+
             await asyncio.sleep(1)
+        
         
         await server.stop()
 
@@ -144,17 +147,21 @@ Client
 
 
     @client.callback("message")
-    async def msg(instance: str, data: dict) -> None:
-        print(data)
+    async def msg(instance: str, data: dict) -> dict:
+        return {"greetings": "Hello there!"}
 
 
     async def main() -> None:
         await client.start()
 
+
         while True:
-            await client.call("message", {"content": "Hello from client!"})
+            result = await client.call("message", {"greetings": "Hi!"})
+            print(result)
+
             await asyncio.sleep(1)
 
+        
         await client.stop()
 
 

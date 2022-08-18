@@ -15,16 +15,27 @@
 # limitations under the License.
 
 import ssl
+import sys
 
 from time import time
 from logging import Logger, getLogger
-from typing import Callable, Optional, Union, Dict, List, Set
+from typing import Callable, Optional, Union, Dict, Set
 
-from asyncio import get_event_loop, sleep
-from asyncio.events import AbstractEventLoop, AbstractServer
+from uuid import uuid4
+from base64 import b64encode, b64decode
+from binascii import Error as BinError
+
+from asyncio import sleep, create_task, start_server
+from asyncio.streams import StreamReader, StreamWriter
+from asyncio.events import AbstractServer
 from asyncio.tasks import Task
 
-from ._server_tcp_protocol import TCPServerProtocol
+
+if sys.version_info.minor >= 8:
+    from asyncio.exceptions import LimitOverrunError, IncompleteReadError # type: ignore
+
+else:
+    from asyncio.streams import LimitOverrunError, IncompleteReadError # type: ignore
 
 
 try:
@@ -51,13 +62,13 @@ class SaydServer:
     :type queue: int
     :param limit: Limit of connected clients, defaults to `4096`.
     :type limit: int
+    :param buffer: Buffer size limit per client in KiB, defaults to `128`.
+    :type buffer: int
     :param timeout: Time in seconds to disconnect a client that is not responding,\
-            defaults to `4`.
+            defaults to `3`.
     :type timeout: int
-    :param ping: Frequency in seconds to ping the clients, defaults to `2`.
+    :param ping: Frequency in seconds to ping the clients, defaults to `1`.
     :type ping: int
-    :param loop: Asynchronous event loop to use, defaults to `None`.
-    :type loop: Optional[AbstractEventLoop]
     :param logger: Logger to use, defaults to `None`.
     :type logger: Optional[Logger]
     :param cert: Path to the TLS certificate, defaults to `None`.
@@ -72,9 +83,9 @@ class SaydServer:
             port: int = 7050,
             queue: int = 1024,
             limit: int = 4096,
-            timeout: int = 4,
-            ping: int = 2,
-            loop: Optional[AbstractEventLoop] = None,
+            buffer: int = 128,
+            timeout: int = 3,
+            ping: int = 1,
             logger: Optional[Logger] = None,
             cert: Optional[str] = None,
             cert_key: Optional[str] = None
@@ -85,10 +96,9 @@ class SaydServer:
 
         self._queue_limit = queue
         self._connections_limit = limit
+        self._buffer_limit = buffer * 1024
         self._connection_timeout = timeout
         self._ping_timeout = ping
-
-        self._event_loop = loop
 
 
         if logger is not None:
@@ -108,28 +118,22 @@ class SaydServer:
             self._ssl_context = None
         
 
+        self._server: AbstractServer
         self._ping_task: Task
         
-        self._connections: Dict[str, list] = {}
+        self._connections: Dict[tuple, list] = {}
         self._blacklist: Set[str] = set()
 
         self._callbacks: Dict[str, Callable] = {
                 "ping": self._ping
                 }
 
+        self._call_tasks: Set[Task] = set()
+        self._calls: Dict[str, Union[dict, list, None]] = {}
 
-        self._server: AbstractServer
         
-        self._protocol: TCPServerProtocol = TCPServerProtocol(
-                self._connections,
-                self._connections_limit,
-                self._blacklist,
-                self._callbacks,
-                self._logger
-                )
-
-
         try:
+            # Enable uvloop if available.
             tune()
 
         except NameError:
@@ -138,27 +142,13 @@ class SaydServer:
 
     @property
     def clients(self) -> Set[tuple]:
-        """Return the connected clients.
+        """Returns the connected clients.
 
-        :return: A set containing the connections.
+        :return: A set containing the clients.
         :rtype: Set[tuple]
         """
 
-        clients_con = self._connections.keys()
-        con: set = set()
-        
-
-        if len(clients_con) == 0:
-            return con
-
-        
-        for _ in clients_con:
-            con.add((_.split("-")[0],
-                int(_.split("-")[1])
-                ))
-
-        
-        return con
+        return set(self._connections.keys())
 
     
     def callback(self, name: str) -> Callable:
@@ -172,9 +162,9 @@ class SaydServer:
 
         def decorator(function: Callable) -> Callable:
             self._callbacks.update({name: function})
-            
+
             def wrapper(address: tuple, instance: Union[str, None], data: dict) -> Callable: # pylint: disable=unused-argument
-                return function(instance, data)
+                return function(address, instance, data)
 
             return wrapper
 
@@ -203,13 +193,13 @@ class SaydServer:
         """
 
         self._blacklist.add(host)
+        self._logger.info("Server | Host %s added to the blacklist", host)
         
+        # Closes connections from the blacklisted host.
         for connection in list(self._connections.keys()):
-            if connection.split("-")[0] == host:
+            if connection[0] == host:
                 if not self._connections[connection][0].is_closing():
                     self._connections[connection][0].close()
-
-        self._logger.info("Server | Host %s added to the blacklist", host)
 
 
     def unblacklist(self, host: str) -> None:
@@ -218,10 +208,8 @@ class SaydServer:
         :param host: Host to unblock.
         :type host: str
         """
-        
-        if host in self._blacklist:
-            self._blacklist.remove(host)
 
+        self._blacklist.discard(host)
         self._logger.info("Server | Host %s removed from the blacklist", host)
 
 
@@ -230,61 +218,107 @@ class SaydServer:
             name: str,
             data: Optional[dict] = None,
             instance: Optional[str] = None,
-            address: Optional[tuple] = None
-            ) -> None:
-        """Call a function in a remote client or in all clients (broadcast) if address
+            address: Optional[tuple] = None,
+            wait: bool = True,
+            wait_timeout: int = 3,
+            _call_id: Optional[str] = None
+            ) -> Union[dict, list, bool, Exception, None]:
+        """Calls a function in a remote client or in all clients (broadcast) if address
         is not specified.
 
         :param name: Name of the function.
         :type name: str
-        :param data: Data to send.
+        :param data: Data to send, defaults to `None`.
         :type data: dict
-        :param instance: Instance to pass to remote function.
+        :param instance: Instance to pass to the remote function, defaults to `None`.
         :type instance: Optional[str]
-        :param address: Client address.
+        :param address: Client address, defaults to `None`.
         :type address: Optional[tuple]
+        :param wait: `True` to wait for a answer, defaults to `True`.
+        :type wait: bool
+        :param wait_timeout: Time limit in seconds to wait for a answer, defaults to `3`.
+        :type wait_timeout: int
+        :return: The call result.
+        :rtype: Union[dict, list, bool, Exception, None]
         """
         
         if data is not None:
             assert "call" not in data, "Key 'call' is used internally."
+            assert "call_id" not in data, "Key 'call_id' is used internally."
             assert "instance" not in data, "Key 'instance' is used internally."
-
         
-        datap = data.copy() if data is not None else {}
+        
+        datap: dict = data.copy() if data is not None else {}
         datap.update({
             "call": name,
             "instance": instance
             })
 
         
-        dataf = json.dumps(datap).encode() + b"&"
+        to_wait: bool = False
+
+        if _call_id is not None:
+            datap.update({"call_id": _call_id})
+
+        elif wait:
+            to_wait = True
+
+            call_id: str = uuid4().hex
+            self._calls.update({call_id: [] if address is None else None})
+
+            datap.update({"call_id": call_id})
 
         
         try:
-            if address is not None:
-                address_f: str = address[0] + "-" + str(address[1])
+            dataf: bytes = b64encode(json.dumps(datap).encode("ascii")) + b"&"
 
-                if not self._connections[address_f][0].is_closing():
-                    self._connections[address_f][0].write(dataf)
+            if address is not None:
+                if not self._connections[address][0].is_closing():
+                    self._connections[address][0].write(dataf)
+                    await self._connections[address][0].drain()
                 
             else:
                 for connection in list(self._connections.keys()):
                     if not self._connections[connection][0].is_closing():
                         self._connections[connection][0].write(dataf)
+                        await self._connections[connection][0].drain()
 
-        except (RuntimeError, KeyError) as error:
-            self._logger.error("Server | Call error (%s)", error)
+        except (SyntaxError, RuntimeError, KeyError, TypeError,
+                ValueError, AssertionError, ConnectionError) as error:
+
+            return error
+        
+        
+        if to_wait:
+            start_t: float = time()
+            
+            # Wait for a answer.
+            if address is None:
+                con_max: int = len(self._connections)
+
+                while len(self._calls[call_id]) < con_max and (time() - start_t) < wait_timeout: # type: ignore
+                    await sleep(0.01)
+
+            else:
+                while self._calls[call_id] is None and (time() - start_t) < wait_timeout:
+                    await sleep(0.01)
+
+            # If was not answered returns None.
+            if self._calls[call_id] is None or (isinstance(self._calls[call_id], list) and len(self._calls[call_id]) == 0): # type: ignore
+                del self._calls[call_id]
+                return None
+            
+            # If was answered returns the response.
+            answer: Union[dict, list] = self._calls[call_id] # type: ignore
+            del self._calls[call_id]
+            return answer
+        
+        return True
 
     
     async def start(self) -> None:
-        """Start the server."""
+        """Starts the server."""
 
-        if self._event_loop is None:
-            self._event_loop = get_event_loop()
-
-        self._protocol.event_loop = self._event_loop
-
-        
         if self._ssl_context is not None:
             ssl_data = {
                     "ssl": self._ssl_context,
@@ -295,30 +329,30 @@ class SaydServer:
             ssl_data = {}
         
         
-        self._server = await self._event_loop.create_server( # type: ignore
-                lambda: self._protocol,
-                host=self._host,
+        self._server = await start_server(
+                self._connection_bootstrap,
+                host=self._host, # type: ignore
                 port=self._port,
+                limit=self._buffer_limit,
                 backlog=self._queue_limit,
                 start_serving=True,
-                **ssl_data)
+                **ssl_data) # type: ignore
 
-
-        self._ping_task = self._event_loop.create_task(self._ping_clients())
+        self._ping_task = create_task(self._ping_clients())
 
 
     async def stop(self) -> None:
-        """Stop the server."""
+        """Stops the server."""
 
         self._ping_task.cancel()
 
-
+        # Closes clients connections.
         for connection in list(self._connections.keys()):
             if not self._connections[connection][0].is_closing():
                 self._connections[connection][0].close()
-
-                del self._connections[connection]
-                
+            
+            self._connections[connection][2].cancel()
+            del self._connections[connection]
 
         self._server.close()
 
@@ -326,55 +360,35 @@ class SaydServer:
     async def _ping_clients(self) -> None:
         """Continuously check the connection status of the clients."""
 
-        timeout: int
-
-        con_keys: List[str] = []
-
-
-        if self._connection_timeout <= 1:
-            timeout = 2
-
-        else:
-            timeout = self._connection_timeout
-
-
         while 1:
             current_time = time()
 
-
             for connection in list(self._connections.keys()):
                 try:
-                    if (current_time - self._connections[connection][1]) >= timeout:
+                    # Checks if the connection is closed.
+                    if self._connections[connection][0].is_closing():
+                        self._connections[connection][2].cancel()
+                        del self._connections[connection]
+
+                        self._logger.info("Server | Disconnection from %s:%s", connection[0], connection[1])
+                    
+                    # Checks if the client stopped responding.
+                    elif (current_time - self._connections[connection][1]) >= self._connection_timeout: 
                         if not self._connections[connection][0].is_closing():
                             self._connections[connection][0].close()
 
-                        con_keys.append(connection)
-                        
-                        instf = connection.split("-")
+                        self._connections[connection][2].cancel()
+                        del self._connections[connection]
 
-                        self._logger.info("Server | Disconnection from %s:%s",
-                                instf[0], instf[1])
+                        self._logger.info("Server | Disconnection from %s:%s", connection[0], connection[1])
+                    
+                    # Ping the client.
+                    else:
+                        await self.call(name="ping", address=connection, wait=False)
 
-                    elif not self._connections[connection][0].is_closing():
-                        await self.call(
-                                name="ping",
-                                address=tuple(connection.split("-"))
-                                )
 
                 except KeyError as error:
-                    self._logger.error("Server | Ping send error (%s)",
-                            error)
-
-
-            for _ in con_keys:
-                try:
-                    del self._connections[_]
-
-                except KeyError:
-                    pass
-
-            con_keys.clear()
-
+                    self._logger.error("Server | Ping send error (%s)", error)
 
             await sleep(self._ping_timeout)
 
@@ -383,10 +397,151 @@ class SaydServer:
         """Called when a ping is received from a client."""
 
         try:
-            address_f: str = address[0] + "-" + str(address[1])
-
-            self._connections[address_f][1] = time()
+            self._connections[address][1] = time()
 
         except KeyError as error:
-            self._logger.error("Server | Ping receive error (%s)",
-                    error)
+            self._logger.error("Server | Ping receive error (%s)", error)
+
+
+    async def _connection_bootstrap(self, reader: StreamReader, writer: StreamWriter) -> None:
+        address: tuple = writer.get_extra_info("peername")
+
+        
+        if address is None or address in self._connections or address[0] in self._blacklist:
+            writer.close()
+
+        elif len(self._connections)+1 > self._connections_limit:
+            writer.close()
+
+            self._logger.info("Server | Connection rejected from %s:%s (max capacity)", address[0], address[1])
+
+        else:
+            task: Task = create_task(self._connection_handler(reader, address))
+
+            self._connections.update({address: [writer, time(), task]})
+
+            self._logger.info("Server | Connection from %s:%s", address[0], address[1])
+            
+
+    async def _connection_handler(self, reader: StreamReader, address: tuple) -> None:
+        stream_reader = reader
+
+        recv_data: bytes
+        raw_data: str
+        data: dict
+        
+        call: str
+        call_id: Union[str, None]
+        instance: str
+        task: Task
+
+
+        async def reset_buffer(timeout: float = 0) -> None:
+            try:
+                del recv_data, raw_data, data, call, call_id, instance, task
+
+            except NameError:
+                pass
+
+            await sleep(timeout)
+
+
+        while 1:
+            try:
+                try:
+                    recv_data = await stream_reader.readuntil(b"&")
+
+                except LimitOverrunError:
+                    self._logger.info("Server | Buffer limit exceeded for host %s:%s", address[0], address[1])
+
+                    await reset_buffer(0.1)
+                    continue
+
+                except (IncompleteReadError, ConnectionError):
+                    await reset_buffer(0.1)
+                    continue
+
+
+                raw_data = b64decode(recv_data[:-1].decode("ascii")) # type: ignore
+                data = json.loads(raw_data)
+
+
+                if "call_id" in data:
+                    call_id = data.pop("call_id")
+                    
+                    # Checks if the data is a answer of a previous call.
+                    if call_id in self._calls:
+                        del data["call"]
+                        del data["instance"]
+                        
+                        data.update({"address": address})
+
+                        if isinstance(self._calls[call_id], list):
+                            self._calls[call_id].append(data) # type: ignore
+
+                        else:
+                            self._calls[call_id] = data
+
+                        await reset_buffer()
+                        continue
+
+                else:
+                    call_id = None
+
+
+                call = data.pop("call")
+                instance = data.pop("instance")
+
+
+                if call in self._callbacks:
+                    task = create_task(self._callbacks[call](address, instance, data))
+
+                    setattr(task, "call_id", call_id)
+                    setattr(task, "call_name", call)
+                    setattr(task, "call_instance", instance)
+                    setattr(task, "call_address", address)
+
+                    self._call_tasks.add(task)
+                    task.add_done_callback(self._on_call_exit)
+
+                elif "*" in self._callbacks:
+                    task = create_task(self._callbacks["*"](address, instance, data))
+                    
+                    setattr(task, "call_id", call_id)
+                    setattr(task, "call_name", call)
+                    setattr(task, "call_instance", instance)
+                    setattr(task, "call_address", address)
+
+                    self._call_tasks.add(task)
+                    task.add_done_callback(self._on_call_exit)
+
+            
+            except (json.JSONDecodeError, BinError, KeyError, TypeError,
+                    ValueError, UnicodeDecodeError) as error:
+                
+                self._logger.error("Server | Error in the data received (%s)", error)
+
+            await reset_buffer()
+
+
+    def _on_call_exit(self, task: Task) -> None:
+        result: Union[None, dict] = task.result()
+
+        if result is not None and isinstance(result, dict) and task.call_id is not None: # type: ignore
+            try:
+                rtask: Task = create_task(self.call(
+                    name=task.call_name, # type: ignore
+                    data=result,
+                    instance=task.call_instance, # type: ignore
+                    address=task.call_address, # type: ignore
+                    wait=False,
+                    _call_id=task.call_id # type: ignore
+                    ))
+
+                self._call_tasks.add(rtask)
+                rtask.add_done_callback(self._call_tasks.discard)
+
+            except AssertionError:
+                pass
+
+        self._call_tasks.discard(task)

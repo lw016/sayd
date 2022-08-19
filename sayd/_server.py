@@ -15,7 +15,6 @@
 # limitations under the License.
 
 import ssl
-import sys
 
 from time import time
 from logging import Logger, getLogger
@@ -25,17 +24,12 @@ from uuid import uuid4
 from base64 import b64encode, b64decode
 from binascii import Error as BinError
 
-from asyncio import sleep, create_task, start_server
+from asyncio import (sleep, create_task, start_server,
+        LimitOverrunError, IncompleteReadError, CancelledError)
+
 from asyncio.streams import StreamReader, StreamWriter
 from asyncio.events import AbstractServer
 from asyncio.tasks import Task
-
-
-if sys.version_info.minor >= 8:
-    from asyncio.exceptions import LimitOverrunError, IncompleteReadError # type: ignore
-
-else:
-    from asyncio.streams import LimitOverrunError, IncompleteReadError # type: ignore
 
 
 try:
@@ -525,7 +519,13 @@ class SaydServer:
 
 
     def _on_call_exit(self, task: Task) -> None:
-        result: Union[None, dict] = task.result()
+        result: Union[None, dict]
+
+        try:
+            result = task.result()
+
+        except CancelledError:
+            result = None
 
         if result is not None and isinstance(result, dict) and task.call_id is not None: # type: ignore
             try:

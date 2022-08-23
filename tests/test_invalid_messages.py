@@ -1,5 +1,7 @@
 import socket
 
+from asyncio import sleep
+
 from sayd import SaydServer, SaydClient
 
 
@@ -35,10 +37,12 @@ async def test() -> None:
 
         await client.start()
 
+    await sleep(3)
+
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
     sock.connect(("localhost", 7050))
-    sock.send(b"randomstuffi")
+    sock.send(b"PROXY asdasdasd")
     
     
     for _ in clients:

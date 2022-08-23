@@ -41,6 +41,8 @@ async def test() -> None:
 
         await client.start()
 
+    await sleep(3)
+
 
     for _ in clients:
         response = await _.call("message", wait=False)

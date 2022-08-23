@@ -52,9 +52,9 @@ class SaydServer:
     :type host: Optional[Union[str, list]]
     :param port: Port to use, defaults to `7050`.
     :type port: int
-    :param queue: Limit of clients waiting to connect, defaults to `1024`.
+    :param queue: Limit of clients waiting to connect, defaults to `512`.
     :type queue: int
-    :param limit: Limit of connected clients, defaults to `4096`.
+    :param limit: Limit of connected clients, defaults to `1024`.
     :type limit: int
     :param buffer: Buffer size limit per client in KiB, defaults to `128`.
     :type buffer: int
@@ -75,8 +75,8 @@ class SaydServer:
             self,
             host: Optional[Union[str, list]] = None,
             port: int = 7050,
-            queue: int = 1024,
-            limit: int = 4096,
+            queue: int = 512,
+            limit: int = 1024,
             buffer: int = 128,
             timeout: int = 3,
             ping: int = 1,
@@ -116,6 +116,7 @@ class SaydServer:
         self._ping_task: Task
         
         self._connections: Dict[tuple, list] = {}
+        self._connections_queue: Dict[tuple, list] = {}
         self._blacklist: Set[str] = set()
 
         self._callbacks: Dict[str, Callable] = {
@@ -340,7 +341,15 @@ class SaydServer:
 
         self._ping_task.cancel()
 
-        # Closes clients connections.
+        # Closes queued connections.
+        for connection in list(self._connections_queue.keys()):
+            if not self._connections_queue[connection][0].is_closing():
+                self._connections_queue[connection][0].close()
+            
+            self._connections_queue[connection][2].cancel()
+            del self._connections_queue[connection]
+
+        # Closes open connections.
         for connection in list(self._connections.keys()):
             if not self._connections[connection][0].is_closing():
                 self._connections[connection][0].close()
@@ -357,32 +366,43 @@ class SaydServer:
         while 1:
             current_time = time()
 
+            # Checks queued connections.
+            for connection in list(self._connections_queue.keys()):
+                # Checks if the connection is closed.
+                if self._connections_queue[connection][0].is_closing():
+                    self._connections_queue[connection][2].cancel()
+                    del self._connections_queue[connection]
+
+                # Checks if the client stopped responding.
+                elif (current_time - self._connections_queue[connection][1]) >= self._connection_timeout: 
+                    if not self._connections_queue[connection][0].is_closing():
+                        self._connections_queue[connection][0].close()
+
+                    self._connections_queue[connection][2].cancel()
+                    del self._connections_queue[connection]
+
+            # Checks open connections.
             for connection in list(self._connections.keys()):
-                try:
-                    # Checks if the connection is closed.
-                    if self._connections[connection][0].is_closing():
-                        self._connections[connection][2].cancel()
-                        del self._connections[connection]
+                # Checks if the connection is closed.
+                if self._connections[connection][0].is_closing():
+                    self._connections[connection][2].cancel()
+                    del self._connections[connection]
 
-                        self._logger.info("Server | Disconnection from %s:%s", connection[0], connection[1])
-                    
-                    # Checks if the client stopped responding.
-                    elif (current_time - self._connections[connection][1]) >= self._connection_timeout: 
-                        if not self._connections[connection][0].is_closing():
-                            self._connections[connection][0].close()
+                    self._logger.info("Server | Disconnection from %s:%s", connection[0], connection[1])
+                
+                # Checks if the client stopped responding.
+                elif (current_time - self._connections[connection][1]) >= self._connection_timeout: 
+                    if not self._connections[connection][0].is_closing():
+                        self._connections[connection][0].close()
 
-                        self._connections[connection][2].cancel()
-                        del self._connections[connection]
+                    self._connections[connection][2].cancel()
+                    del self._connections[connection]
 
-                        self._logger.info("Server | Disconnection from %s:%s", connection[0], connection[1])
-                    
-                    # Ping the client.
-                    else:
-                        await self.call(name="ping", address=connection, wait=False)
-
-
-                except KeyError as error:
-                    self._logger.error("Server | Ping send error (%s)", error)
+                    self._logger.info("Server | Disconnection from %s:%s", connection[0], connection[1])
+                
+                # Ping the client.
+                else:
+                    await self.call(name="ping", address=connection, wait=False)
 
             await sleep(self._ping_timeout)
 
@@ -401,10 +421,12 @@ class SaydServer:
         address: tuple = writer.get_extra_info("peername")
 
         
-        if address is None or address in self._connections or address[0] in self._blacklist:
+        if address is None or address[0] in self._blacklist or address in self._connections_queue\
+                or address in self._connections:
+
             writer.close()
 
-        elif len(self._connections)+1 > self._connections_limit:
+        elif (len(self._connections)+len(self._connections_queue))+1 > self._connections_limit:
             writer.close()
 
             self._logger.info("Server | Connection rejected from %s:%s (max capacity)", address[0], address[1])
@@ -412,15 +434,13 @@ class SaydServer:
         else:
             task: Task = create_task(self._connection_handler(reader, address))
 
-            self._connections.update({address: [writer, time(), task]})
-
-            self._logger.info("Server | Connection from %s:%s", address[0], address[1])
-            
+            self._connections_queue.update({address: [writer, time(), task]})
+ 
 
     async def _connection_handler(self, reader: StreamReader, address: tuple) -> None:
         stream_reader = reader
 
-        recv_data: bytes
+        recv_data: Union[bytes, str]
         raw_data: str
         data: dict
         
@@ -428,6 +448,10 @@ class SaydServer:
         call_id: Union[str, None]
         instance: str
         task: Task
+
+        queued: bool = True
+        header: Union[str, list]
+        header_addr: tuple
 
 
         async def reset_buffer(timeout: float = 0) -> None:
@@ -454,6 +478,39 @@ class SaydServer:
                 except (IncompleteReadError, ConnectionError):
                     await reset_buffer(0.1)
                     continue
+
+
+                if queued:
+                    raw_data = recv_data.decode("ascii")
+
+                    # Checks if the data has a proxy protocol header.
+                    if raw_data.find("PROXY") != -1:
+                        header, recv_data = raw_data.split("\n")
+                        recv_data = recv_data.encode("ascii")
+
+                        header = header.split(" ")
+                        header_addr = (header[2], int(header[4]))
+                        
+                        # Verify if the address is valid.
+                        if header_addr[0] in self._blacklist or header_addr in self._connections:
+                            self._connections_queue[address][0].close()
+                            return
+                        
+                        self._connections.update({header_addr: self._connections_queue[address]})
+                        del self._connections_queue[address]
+
+                        address = header_addr
+                    
+                    elif raw_data.find("UNKNOWN") != -1:
+                        self._connections_queue[address][0].close()
+                        return
+
+                    else:
+                        self._connections.update({address: self._connections_queue[address]})
+                        del self._connections_queue[address]
+                    
+                    self._logger.info("Server | Connection from %s:%s", address[0], address[1])
+                    queued = False
 
 
                 raw_data = b64decode(recv_data[:-1].decode("ascii")) # type: ignore
@@ -511,9 +568,12 @@ class SaydServer:
 
             
             except (json.JSONDecodeError, BinError, KeyError, TypeError,
-                    ValueError, UnicodeDecodeError) as error:
+                    ValueError, IndexError, UnicodeDecodeError) as error:
                 
                 self._logger.error("Server | Error in the data received (%s)", error)
+
+                await reset_buffer(0.1)
+                continue
 
             await reset_buffer()
 

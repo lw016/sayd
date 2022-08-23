@@ -245,7 +245,7 @@ class SaydClient:
                 self._writer.write(dataf)
                 await self._writer.drain()
 
-        except (SyntaxError, RuntimeError, KeyError, TypeError,
+        except (SyntaxError, RuntimeError, TypeError,
                 ValueError, AssertionError, ConnectionError) as error:
 
             return error
@@ -450,6 +450,9 @@ class SaydClient:
                     ValueError, UnicodeDecodeError) as error:
 
                 self._logger.error("Client | Error in the data received (%s)", error)
+
+                await reset_buffer(0.1)
+                continue
 
             await reset_buffer()
 

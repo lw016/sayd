@@ -28,12 +28,14 @@ async def test() -> None:
     await server.start()
 
     for _ in range(128):
-        client: SaydClient = SaydClient(port="7050")
+        client: SaydClient = SaydClient()
 
         client.add_callback("message", client_message)
         clients.append(client)
 
         await client.start()
+
+    await sleep(3)
     
 
     assert len(server.clients) == len(clients)

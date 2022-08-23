@@ -15,10 +15,8 @@
 # limitations under the License.
 
 from typing import Optional
-
-from typer import run
-
 from OpenSSL import crypto
+from typer import run # type: ignore
 
 
 def main(

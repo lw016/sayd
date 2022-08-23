@@ -1,3 +1,9 @@
+.. image:: logo.png
+   :width: 128px
+   :height: 128px
+   :align: left
+
+
 Sayd
 ====
 *A performant asynchronous communication protocol in pure Python.*
@@ -9,18 +15,11 @@ This library was developed with simplicity and performance in mind, with modern 
 
 Install
 -------
-Works on Python 3.7.4+, is highly recommended to have installed `ujson <https://github.com/ultrajson/ultrajson>`_ and `uvloop <https://github.com/MagicStack/uvloop>`_ for a performance boost.
+Works on Python 3.7.4+.
 
 .. code-block:: bash
 
     pip install sayd
-
-
-Optional
-^^^^^^^^^^
-.. code-block:: bash
-
-    pip install ujson uvloop
 
 
 Development
@@ -34,16 +33,14 @@ You need to have installed `poetry <https://github.com/python-poetry/poetry>`_ f
     poetry install
 
 
-Run the tests
-^^^^^^^^^^^^^^
-To run all the tests is required to have installed the Python versions 3.7, 3.8, 3.9 and 3.10.
-
+Run tests
+^^^^^^^^^
 .. code-block:: bash
 
-    poetry run tox -e tests-py[37/38/39/310]
+    poetry run tox -e tests
 
-Build the docs
-^^^^^^^^^^^^^^^
+Build docs
+^^^^^^^^^^
 .. code-block:: bash
 
     poetry run tox -e docs
@@ -53,10 +50,11 @@ Features
 --------
 - Client and server implementations
 - Reliable TCP persistent connection
-- Auto reconnection
+- Auto reconnection *(client)*
 - Multiple asynchronous connections *(server)*
 - Blacklist of clients *(server)*
 - TLS encryption
+- Proxy Protocol V2 support *(server)*
 - Data transmitted as dictionaries *(json)*
 - Broadcast *(server)*
 - Remote function callbacks
@@ -71,7 +69,7 @@ Roadmap
 
 CLI
 ---
-The built-in CLI utility (*sayd*) can be used to generate self-signed certificates to encrypt the connection. Optionally you can install `rich <https://github.com/Textualize/rich>`_ to have a pretty CLI output.
+The built-in CLI utility (*sayd*) can be used to generate self-signed certificates to encrypt the connection.
 
 .. code-block:: bash
 
@@ -104,7 +102,7 @@ Server
 
     @server.callback("message")
     async def msg(address: tuple, instance: str, data: dict) -> dict:
-        return {"greetings": "Hello there!"}
+        return {"greetings": "Hello from server!"}
 
 
     async def main() -> None:
@@ -112,7 +110,7 @@ Server
         
         
         while True:
-            result = await server.call("message", {"greetings": "Hi!"}) # Broadcast call.
+            result = await server.call("msg", {"greetings": "Hi!"}) # Broadcast call.
             print(result)
 
             await asyncio.sleep(1)
@@ -146,9 +144,9 @@ Client
     client = SaydClient(logger=logger)
 
 
-    @client.callback("message")
+    @client.callback("msg")
     async def msg(instance: str, data: dict) -> dict:
-        return {"greetings": "Hello there!"}
+        return {"greetings": "Hello from client!"}
 
 
     async def main() -> None:

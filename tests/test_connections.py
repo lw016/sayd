@@ -1,3 +1,5 @@
+from asyncio import sleep
+
 from sayd import SaydServer, SaydClient
 
 
@@ -32,6 +34,8 @@ async def test() -> None:
         clients.append(client)
 
         await client.start()
+
+    await sleep(3)
     
     
     for _ in clients:

@@ -1,9 +1,5 @@
-.. image:: logo.png
-   :width: 128px
-   :height: 128px
-   :align: center
-   :alt: Sayd
-
+Sayd
+====
 *A performant asynchronous communication protocol in pure Python.*
 
 This library was developed with simplicity and performance in mind, with modern practices of Python development, currently in a test state.

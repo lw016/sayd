@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sayd"
-version = "1.2.3"
+version = "1.2.4"
 description = "A performant asynchronous communication protocol in pure Python."
 authors = ["LW016"]
 readme = "README.rst"

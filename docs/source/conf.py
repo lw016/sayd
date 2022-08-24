@@ -25,7 +25,7 @@ copyright = '2022, LW016'
 author = 'LW016'
 
 # The full version, including alpha/beta/rc tags
-release = '1.2.3'
+release = '1.2.4'
 
 
 # -- General configuration ---------------------------------------------------

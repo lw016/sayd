@@ -414,7 +414,7 @@ class SaydClient:
 
                         self._calls[call_id] = data
 
-                        await reset_buffer(0.01)
+                        await reset_buffer()
                         continue
 
                 else:
@@ -454,7 +454,7 @@ class SaydClient:
                 await reset_buffer(0.1)
                 continue
 
-            await reset_buffer(0.01)
+            await reset_buffer()
 
 
     def _on_call_exit(self, task: Task) -> None:

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 __all__ = ("SaydServer", "SaydClient")
-__version__ = "1.2.6"
+__version__ = "1.2.7"
 
 __author__ = "LW016"
 __license__ = "Apache License, Version 2.0"

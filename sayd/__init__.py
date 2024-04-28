@@ -1,6 +1,6 @@
 """Sayd package."""
 
-# Copyright 2022 LW016 (GPG FINGERPRINT 33CA C1E8 EC4C 0B31 73AE  DD8B 31A5 35D1 2844 39ED)
+# Copyright 2022 LW016
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 # limitations under the License.
 
 __all__ = ("SaydServer", "SaydClient")
-__version__ = "1.2.8"
+__version__ = "1.2.9"
 
 __author__ = "LW016"
 __license__ = "Apache License, Version 2.0"

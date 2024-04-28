@@ -9,7 +9,7 @@ This library was developed with simplicity and performance in mind, with modern 
 
 Install
 -------
-Works on Python 3.7.4+.
+Works on Python 3.8.0+.
 
 .. code-block:: bash
 
